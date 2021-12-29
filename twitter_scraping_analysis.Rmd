@@ -1,0 +1,238 @@
+---
+title: "Web Scraping Analytics"
+author: "Po Yi Liu"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(tidytext)
+library(topicmodels)
+library(wordcloud2)
+library(readr)
+library(stringr)
+library(twitteR)
+```
+
+```{r}
+# Declare Twitter API Credentials
+api_key <- "your_key_here"
+api_secret <- "your_secret_here" 
+token <- "your_token_here" 
+token_secret <- "your_token_secret_here" 
+ 
+# Create Twitter Connection
+setup_twitter_oauth(api_key, api_secret, token, token_secret)
+```
+
+```{r}
+#Grab the last 10000 tweets
+d_tweets<-searchTwitter("AI", n=10000, lang="en")
+
+#Convert to a data frame
+d_tweets_df <- twListToDF(d_tweets)
+
+#Standardise text encoding
+d_tweets_df$text <-
+  str_conv(d_tweets_df$text, 'UTF-8')
+
+saveRDS(d_tweets_df, 'D:/medium/web scraping analytics/twitter_search_dataset.RDS')
+```
+
+
+## Term Frequency & Wordcloud 
+
+create tweet_freq table
+
+1. create a month_varaible 
+2. parse terms into words, remove the stopwords
+3. summarize by month and word
+4. take top 100 words by month 
+```{r}
+tweet_freq<-d_tweets_df%>%
+  mutate(month = month(created))%>%
+  unnest_tokens(word,text)%>%
+  anti_join(get_stopwords())%>%
+  filter(!word %in% c("t.co", "https", "false", "twitter", "iphone", "amp", 
+                      "rt", "android","it's","like","love"))%>%
+  group_by(month,word)%>%
+  summarise(n=n())%>%
+  top_n(100,n) 
+
+tweet_freq
+```
+
+
+```{r}
+tweet_freq%>%
+  ungroup()%>%
+  select(-month)%>%
+  group_by(word)%>%
+  summarise(n = sum(n))%>%
+  ungroup()%>%
+  wordcloud2(size = 2)
+```
+
+
+## Bigram Analysis 
+
+create table bigram_freq by 
+1. create a bigram 
+2. summarize by bigram 
+3. use separate to split bigram into word1 and word2 then filter the following
+4. create a bigram varaible by combining word1 and word2 together 
+5. wordcloud of top 100 bigram terms. 
+6. make a chart of the top 20 terms that come after the word "new"
+7. make a chart of the top 20 terms that come before the word "new"
+
+```{r}
+bigram_freq<-d_tweets_df%>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2, n_min = 2)%>%
+  group_by(bigram)%>%
+  summarise(n=n())%>%
+  ungroup()%>%
+  separate(bigram, c("word1", "word2"), sep = " ")%>%
+  anti_join(stop_words,by = c("word1" = "word"))%>%
+  anti_join(stop_words,by = c("word2" = "word"))%>%
+  filter(!word1 %in% c("t.co", "https", "false", "twitter", "iphone", "amp", 
+                      "rt", "android","it's","like","love"),
+         !word2 %in% c("t.co", "https", "false", "twitter", "iphone", "amp", 
+                      "rt", "android","it's","like","love"),
+         !str_detect(word1,"^\\d"),
+         !str_detect(word2,"^\\d"))%>%
+  mutate(bigram = paste(word1,word2))%>%
+  select(bigram,n)%>%
+  arrange(desc(n))
+
+bigram_freq
+```
+
+
+```{r}
+bigram_freq%>%
+  top_n(100,n)%>%
+  wordcloud2(size = 0.5)
+```
+
+
+```{r}
+bigram_freq%>%
+  filter(str_detect(bigram,"^ai"))%>%
+  top_n(20,n)%>%
+  ggplot(aes(x=reorder(bigram, n),y=n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Frequency of ai", x="ai",y="counts")
+```
+
+```{r}
+bigram_freq%>%
+  filter(str_detect(bigram,"ai$"))%>%
+  top_n(20,n)%>%
+  ggplot(aes(x=reorder(bigram, n),y=n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Frequency of ai", x="ai",y="counts")
+```
+
+
+
+## Sentiments
+
+create sentiment_by_month 
+1. inner join words_by_month to "bing" sentiments 
+2. group by month and sentiment 
+3. get the top 10 words by month 
+4. make words with negative sentiment negative (-n) and positive words positive
+
+
+```{r}
+sentiment_by_month <- tweet_freq %>%
+  inner_join(get_sentiments("nrc")) %>%
+  group_by(month,sentiment) %>%
+  top_n(30,n)%>%
+  mutate(n = if_else(sentiment == "negative", -n, n))
+
+sentiment_by_month
+```
+
+
+```{r}
+sentiment_by_month%>%
+  filter(month==12)%>%
+  ggplot(aes(reorder(word, n), n, fill=sentiment)) +
+  geom_col() + 
+  coord_flip() +
+  labs(title = "Bing: Top and bottom 10 terms by sentiment in Jan", x = "term", y="count")
+```
+
+
+## Topic Prep 
+
+Create tweet_dtm by preparing a Document Term Matrix
+
+1. unest tokens into words 
+2. remove the stop words
+3. summarize by tweet id and word
+4. take top 20 words by id 
+
+```{r}
+tweet_dtm<-d_tweets_df%>%
+  unnest_tokens(word,text)%>%
+  anti_join(get_stopwords())%>%
+  filter(!word %in% c("t.co", "https", "false", "twitter", "iphone", "amp", 
+                      "rt", "android","it's","like","love"))%>%
+  group_by(id,word)%>%
+  summarise(n=n())%>%
+  top_n(20,n)
+tweet_dtm
+```
+
+
+```{r}
+tweet_dtm <- tweet_dtm %>% cast_dtm(id, word, n)
+tweet_lda <- LDA(tweet_dtm, k = 10, method = "Gibbs", control = list(seed = 1234))
+```
+
+
+## Topic Model 
+
+1. document term matrix needs to be cleaned up and generate beta 
+2. generate topic terms by extracting top_n by beta 
+3. plot the topics 
+
+```{r}
+tidy_tweet <- tidy(tweet_lda,matrix = "beta")
+
+tweet_topic_terms <- tidy_tweet %>%
+  group_by(topic) %>%
+  filter(term != "it’s") %>%
+  top_n(20,beta) %>%
+  ungroup()%>%
+  arrange(topic)
+
+tweet_topic_terms
+
+```
+
+```{r}
+tweet_topic_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  #ungroup() %>%
+  arrange(desc(beta)) %>%  
+  ggplot(aes(reorder(term, beta), beta, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE, size = 0.5) +
+  coord_flip() +
+  labs(title = "Topic Terms",
+       x = NULL, y = expression(beta)) + 
+  facet_wrap(~ topic, ncol = 5, scales = "free")+
+  theme(axis.text = element_text(size = 7))
+```
+
+
+
